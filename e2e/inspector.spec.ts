@@ -59,3 +59,23 @@ test('P1-08: other versions are blocked with the detected version', async ({ pag
   await expect(page.getByRole('alert').last()).toContainText('binary .skel is not supported yet')
   await expect(page.locator('header')).not.toContainText('Spine 4')
 })
+
+test('tree search filters to matches and their ancestors', async ({ page }) => {
+  await page.goto('/')
+  await importFiles(page, [sb('spineboy-pro.json'), sb('spineboy.atlas'), sb('spineboy.png')])
+  const search = page.getByLabel('Find in skeleton tree')
+  await search.fill('Gun')
+  await expect(page.locator('[id="bone:gun"]')).toBeVisible()
+  await expect(page.locator('[id="bone:root"]')).toBeVisible() // ancestor kept
+  await expect(page.locator('[id="bone:head"]')).toHaveCount(0)
+  await expect(page.locator('.row mark').first()).toHaveText(/gun/i)
+  await page.locator('[id="slot:gun"]').click()
+  await expect(page.locator('.inspector h3').first()).toHaveText('Slot · gun')
+  await search.fill('zzz')
+  await expect(page.locator('.tree')).toContainText('No matches for “zzz”')
+  await search.press('Escape')
+  await expect(page.locator('[id="bone:head"]')).toBeVisible()
+  await expect(page.locator('[id="slot:gun"]')).toHaveClass(/on/)
+  await search.fill('gun')
+  await page.screenshot({ path: 'test-results/search.png', clip: { x: 0, y: 0, width: 420, height: 400 } })
+})

@@ -5,7 +5,7 @@ import {
   AttachmentType, TransformMode,
   type Attachment, type Color, type MeshAttachment, type PointAttachment, type RegionAttachment, type SkeletonData, type VertexAttachment,
 } from '@pixi-spine/all-3.8'
-import { buildTree, gate, limitations, loadSkeleton, selId, type Sel, type TreeNode } from './spine'
+import { buildTree, filterTree, gate, limitations, loadSkeleton, selId, type Sel, type TreeNode } from './spine'
 import { Viewport } from './viewport'
 
 interface Project {
@@ -61,6 +61,7 @@ const color = (c: Color | null, alpha = true) =>
   c ? <><span className="swatch" style={{ background: `#${hex(c, false)}`, opacity: c.a }} />{hex(c, alpha)}</> : <span className="muted">none</span>
 const BLEND: Record<number, string> = { [BLEND_MODES.NORMAL]: 'normal', [BLEND_MODES.ADD]: 'additive', [BLEND_MODES.MULTIPLY]: 'multiply', [BLEND_MODES.SCREEN]: 'screen' }
 const TRANSFORM = ['normal', 'onlyTranslation', 'noRotationOrReflection', 'noScale', 'noScaleOrReflection']
+const NONE = new Set<string>()
 const empty = <span className="muted">(empty)</span>
 
 function Props({ title, rows }: { title: string; rows: [string, ReactNode][] }) {
@@ -121,8 +122,13 @@ function Inspector({ project, sel, vp }: { project: Project; sel: Sel; vp: Viewp
   </>
 }
 
-function Tree({ nodes, depth, sel, collapsed, toggle, select }: {
-  nodes: TreeNode[]; depth: number; sel: string; collapsed: Set<string>; toggle: (id: string) => void; select: (s: Sel) => void
+function Mark({ text, q }: { text: string; q: string }) {
+  const i = q ? text.toLowerCase().indexOf(q.toLowerCase()) : -1
+  return i < 0 ? <>{text}</> : <>{text.slice(0, i)}<mark>{text.slice(i, i + q.length)}</mark>{text.slice(i + q.length)}</>
+}
+
+function Tree({ nodes, depth, sel, q, collapsed, toggle, select }: {
+  nodes: TreeNode[]; depth: number; sel: string; q: string; collapsed: Set<string>; toggle: (id: string) => void; select: (s: Sel) => void
 }) {
   return <>{nodes.map(nd => {
     const open = !collapsed.has(nd.id)
@@ -131,9 +137,9 @@ function Tree({ nodes, depth, sel, collapsed, toggle, select }: {
         aria-expanded={nd.children.length ? open : undefined}>
         <span className="caret" onClick={e => { e.stopPropagation(); toggle(nd.id) }}>{nd.children.length ? (open ? '▾' : '▸') : ''}</span>
         <span className={`kind k-${nd.sel.kind}`}>{nd.sel.kind[0].toUpperCase()}</span>
-        {nd.label}
+        <span><Mark text={nd.label} q={q} /></span>
       </button>
-      {open && nd.children.length > 0 && <Tree nodes={nd.children} depth={depth + 1} sel={sel} collapsed={collapsed} toggle={toggle} select={select} />}
+      {open && nd.children.length > 0 && <Tree nodes={nd.children} depth={depth + 1} sel={sel} q={q} collapsed={collapsed} toggle={toggle} select={select} />}
     </div>
   })}</>
 }
@@ -150,6 +156,7 @@ function App() {
   const [sel, setSel] = useState<Sel>(null)
   const [anim, setAnim] = useState('')
   const [collapsed, setCollapsed] = useState(new Set<string>())
+  const [query, setQuery] = useState('')
   const [, tick] = useState(0)
 
   useEffect(() => {
@@ -182,7 +189,10 @@ function App() {
       return next.size === c.size ? c : next
     })
     requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: 'nearest' }))
-  }, [id])
+  }, [id, query === ''])
+
+  const q = query.trim()
+  const shown = useMemo(() => filterTree(project?.tree ?? [], q), [project, q])
 
   const vp = vpRef.current
 
@@ -246,10 +256,13 @@ function App() {
     </div>
 
     <nav className="tree" aria-label="Skeleton tree">
-      {project
-        ? <Tree nodes={project.tree} depth={0} sel={id} collapsed={collapsed} select={setSel}
-            toggle={k => setCollapsed(c => { const s = new Set(c); s.has(k) ? s.delete(k) : s.add(k); return s })} />
-        : <p className="muted" style={{ padding: 10 }}>No project loaded.</p>}
+      <input className="search" type="search" placeholder="Find bone, slot, attachment…" aria-label="Find in skeleton tree"
+        disabled={!project} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Escape' && setQuery('')} />
+      {!project ? <p className="muted pad">No project loaded.</p>
+        : !shown.length ? <p className="muted pad">No matches for “{q}”.</p>
+        // While searching, every match path is shown expanded.
+        : <Tree nodes={shown} depth={0} sel={id} q={q} collapsed={q ? NONE : collapsed} select={setSel}
+            toggle={k => !q && setCollapsed(c => { const s = new Set(c); s.has(k) ? s.delete(k) : s.add(k); return s })} />}
     </nav>
 
     <div className="stage">

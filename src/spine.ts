@@ -56,6 +56,16 @@ export function loadSkeleton(
 export const selId = (s: Sel) =>
   !s ? '' : s.kind === 'attachment' ? `attachment:${JSON.stringify([s.skin, s.slot, s.name])}` : `${s.kind}:${s.name}`
 
+// Keeps nodes whose label contains the query (case-insensitive) plus their ancestors.
+export function filterTree(nodes: TreeNode[], query: string): TreeNode[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return nodes
+  return nodes.flatMap(n => {
+    const children = filterTree(n.children, q)
+    return children.length || n.label.toLowerCase().includes(q) ? [{ ...n, children }] : []
+  })
+}
+
 export function buildTree(d: SkeletonData): TreeNode[] {
   const node = (sel: NonNullable<Sel>, label: string): TreeNode => ({ id: selId(sel), label, sel, children: [] })
   const bones = new Map<string, TreeNode>()

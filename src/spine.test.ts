@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { BaseTexture } from 'pixi.js'
 import { Skeleton } from '@pixi-spine/all-3.8'
-import { buildTree, gate, limitations, loadSkeleton, type TreeNode } from './spine'
+import { buildTree, filterTree, gate, limitations, loadSkeleton, type TreeNode } from './spine'
 
 const fx = (p: string) => readFileSync(new URL(`../fixtures/${p}`, import.meta.url), 'utf8')
 const json38 = fx('spineboy-3.8/spineboy-pro.json')
@@ -85,5 +85,20 @@ describe('world space display (P1-04)', () => {
     const root = sk.findBone('root')!, hip = sk.findBone('hip')!
     expect(-root.getWorldRotationX()).toBeCloseTo(0.28) // root rotation in the JSON
     expect(-hip.worldY).toBeGreaterThan(200) // hip sits ~247 units above root in Spine
+  })
+})
+
+describe('tree search', () => {
+  const tree = buildTree(load(JSON.parse(json38)))
+  const ids = (ns: TreeNode[]): string[] => ns.flatMap(n => [n.id, ...ids(n.children)])
+  it('keeps matches and their ancestors only, case-insensitive', () => {
+    const got = ids(filterTree(tree, '  HAIR3 '))
+    expect(got).toContain('bone:hair3')
+    expect(got).toContain('bone:head') // ancestor
+    expect(got).not.toContain('bone:hair1') // sibling branch
+  })
+  it('returns the full tree for an empty query and nothing for no match', () => {
+    expect(filterTree(tree, ' ')).toBe(tree)
+    expect(filterTree(tree, 'zzz')).toEqual([])
   })
 })
