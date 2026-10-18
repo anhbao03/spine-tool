@@ -158,6 +158,7 @@ function App() {
   const [, tick] = useState(0)
   const [cols, setCols] = useState({ left: 280, right: 340 })
   const [seq, setSeq] = useState<string[]>([])
+  const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? 'dark')
 
   useEffect(() => {
     let v: Viewport
@@ -192,6 +193,13 @@ function App() {
     })
     requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: 'nearest' }))
   }, [id, query === ''])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    try { localStorage.theme = theme } catch { /* storage blocked: theme just won't persist */ }
+    const v = vpRef.current
+    if (v) v.app.renderer.background.color = getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim()
+  }, [theme])
 
   const q = query.trim()
   const shown = useMemo(() => filterTree(project?.tree ?? [], q), [project, q])
@@ -262,6 +270,8 @@ function App() {
 
   return <div className="app" style={{ '--left': `${cols.left}px`, '--right': `${cols.right}px` } as React.CSSProperties} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); open([...e.dataTransfer.files]) }}>
     <header>
+      <button className="theme" onClick={() => setTheme(t => (t === 'dark' ? 'light' : 'dark'))}
+        aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>{theme === 'dark' ? '☀︎' : '☾'}</button>
       <span className="title">Spine Inspector{project && <span className="muted"> · {project.name} · Spine {project.version} {project.format}</span>}</span>
       <input ref={input} type="file" multiple hidden accept=".json,.skel,.bytes,.atlas,.txt,.png,.jpg,.jpeg,.webp"
         onChange={e => { open([...(e.target.files ?? [])]); e.target.value = '' }} />

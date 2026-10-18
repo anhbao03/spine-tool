@@ -4,17 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Spine Inspector</title>
+    <script>try { if (localStorage.theme === 'light') document.documentElement.dataset.theme = 'light' } catch {}</script>
     <style>
-      :root { --bg: #1b1b1b; --panel: #222; --line: #333; --text: #ddd; --dim: #888; --accent: #00b8d4; --err: #ff6b6b; --warn: #f4b942; }
+      :root { color-scheme: dark; --bg: #1b1b1b; --panel: #222; --line: #333; --text: #ddd; --dim: #888; --accent: #00b8d4; --err: #ff6b6b; --warn: #f4b942;
+        --field: #2d2d2d; --sel: #0b4f5c; --float: #222d; --tick: #555; --tick-major: #999; --canvas: #262626; }
+      :root[data-theme=light] { color-scheme: light; --bg: #f3f3f3; --panel: #fafafa; --line: #d6d6d6; --text: #222; --dim: #6b6b6b; --accent: #0097a7; --err: #c62828; --warn: #b26a00;
+        --field: #fff; --sel: #b2ebf2; --float: #fafafadd; --tick: #bbb; --tick-major: #777; --canvas: #e4e4e4; }
       * { box-sizing: border-box; }
       html, body, #root { height: 100%; margin: 0; }
       body { background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, sans-serif; }
-      button, select, input { font: inherit; color: inherit; background: #2d2d2d; border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; }
+      button, select, input { font: inherit; color: inherit; background: var(--field); border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; }
       button:hover:not(:disabled) { border-color: var(--accent); }
       button:disabled { opacity: .4; }
       .app { display: grid; grid-template: auto auto 1fr auto / var(--left, 280px) minmax(0, 1fr) var(--right, 340px); height: 100%; }
       header { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
       header .title { font-weight: 600; margin-right: auto; }
+      .theme { width: 30px; padding: 3px 0; }
       .msgs { grid-column: 1 / -1; }
       .msg { display: flex; gap: 8px; align-items: flex-start; padding: 6px 10px; border-bottom: 1px solid var(--line); }
       .msg.err { color: var(--err); } .msg.warn { color: var(--warn); }
@@ -24,18 +29,18 @@
       .search { position: sticky; top: 0; z-index: 1; width: 100%; border-radius: 0; border-width: 0 0 1px; padding: 6px 10px; background: var(--panel); }
       .pad { padding: 10px; margin: 0; }
       mark { background: #f4b94255; color: inherit; border-radius: 2px; }
-      .overlays { position: absolute !important; inset: 8px auto auto 8px !important; display: grid; gap: 2px; padding: 6px 10px; margin: 0; border: 1px solid var(--line); border-radius: 4px; background: #222d; }
+      .overlays { position: absolute !important; inset: 8px auto auto 8px !important; display: grid; gap: 2px; padding: 6px 10px; margin: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--float); }
       .overlays legend { color: var(--dim); font-size: 11px; padding: 0 4px; }
       .overlays label { white-space: nowrap; }
       details { border-bottom: 1px solid var(--line); padding: 6px 0; }
       summary { cursor: pointer; font-weight: 600; padding: 2px 0; }
       details > :not(summary):first-of-type { margin-top: 6px; }
-      .monitor tr { cursor: default; } .monitor tr.on td { background: #0b4f5c; }
-      .monitor td { padding: 1px 4px; border-bottom: 1px solid #2a2a2a; }
+      .monitor tr { cursor: default; } .monitor tr.on td { background: var(--sel); }
+      .monitor td { padding: 1px 4px; border-bottom: 1px solid var(--line); }
       .diff { color: var(--warn); }
       .small { font-size: 12px; margin: 0 0 6px; }
       .row { display: flex; align-items: center; gap: 4px; width: 100%; border: 0; border-radius: 0; background: none; padding: 1px 6px; text-align: left; white-space: nowrap; }
-      .row.on { background: #0b4f5c; }
+      .row.on { background: var(--sel); }
       .caret { width: 14px; color: var(--dim); flex: none; }
       .kind { font-size: 10px; width: 14px; text-align: center; border-radius: 3px; flex: none; color: #111; }
       .k-bone { background: #8ab4f8; } .k-slot { background: #81c995; } .k-attachment { background: #f6aea9; }
@@ -46,12 +51,12 @@
       .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
       .controls > * { white-space: nowrap; flex: none; }
       .chip { border: 1px solid var(--line); border-radius: 4px; padding: 1px 2px 1px 8px; }
-      .chip.on { border-color: var(--accent); background: #0b4f5c; }
+      .chip.on { border-color: var(--accent); background: var(--sel); }
       .chip button { border: 0; background: none; padding: 0 6px; }
       .frameinfo { margin: 4px 0 0; font-variant-numeric: tabular-nums; }
       .ruler { position: relative; height: 40px; margin: 0 8px; border-bottom: 1px solid var(--line); }
       .ruler i { position: absolute; bottom: 0; width: 1px; pointer-events: none; }
-      .tick { height: 6px; background: #555; } .tick.major { height: 12px; background: #999; }
+      .tick { height: 6px; background: var(--tick); } .tick.major { height: 12px; background: var(--tick-major); }
       .tick span { position: absolute; bottom: 13px; transform: translateX(-50%); font: 10px/1 system-ui; color: var(--dim); font-style: normal; }
       .ruler .keymark { top: 3px; bottom: auto; height: 6px; width: 3px; margin-left: -1px; background: var(--warn); border-radius: 1px; }
       .ruler .head { top: 0; width: 2px; margin-left: -1px; background: var(--accent); }
@@ -67,7 +72,7 @@
       table { width: 100%; border-collapse: collapse; }
       td { padding: 1px 0; vertical-align: top; } td:first-child { color: var(--dim); width: 45%; }
       td:last-child { font-variant-numeric: tabular-nums; word-break: break-all; }
-      .swatch { display: inline-block; width: 10px; height: 10px; border: 1px solid #555; margin-right: 4px; vertical-align: middle; }
+      .swatch { display: inline-block; width: 10px; height: 10px; border: 1px solid var(--tick); margin-right: 4px; vertical-align: middle; }
       .muted { color: var(--dim); }
       .resizer { grid-column: 2; grid-row: 3; width: 6px; margin: 0 -3px; z-index: 2; cursor: col-resize; }
       .resizer:hover, .resizer:focus-visible, .resizer:active { background: var(--accent); outline: 0; }
