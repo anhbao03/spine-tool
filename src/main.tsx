@@ -7,7 +7,7 @@ import {
 } from '@pixi-spine/all-3.8'
 import { buildTree, filterTree, gate, limitations, loadSkeleton, selId, type Sel, type TreeNode } from './spine'
 import { OVERLAYS, Viewport, type Overlay } from './viewport'
-import { AnimationStatePanel, EventMonitor, MetricsPanel, n, Props, SlotMonitor } from './panels'
+import { AnimationStatePanel, EventMonitor, MetricsPanel, n, Props, SlotMonitor, Timeline } from './panels'
 
 interface Project {
   name: string; version: string; format: 'json' | 'binary'; data: SkeletonData; warnings: string[]; tree: TreeNode[]
@@ -157,6 +157,7 @@ function App() {
   const [query, setQuery] = useState('')
   const [, tick] = useState(0)
   const [cols, setCols] = useState({ left: 280, right: 340 })
+  const [seq, setSeq] = useState<string[]>([])
 
   useEffect(() => {
     let v: Viewport
@@ -203,6 +204,7 @@ function App() {
     setPending(null)
     setSel(null)
     setCollapsed(new Set())
+    setSeq(s => s.filter(a => p.data.findAnimation(a)))
     vp.load(p.data)
     const first = p.data.animations[0]?.name ?? ''
     setAnim(first)
@@ -230,6 +232,21 @@ function App() {
   const fps = vp?.fps
   const rerender = () => tick(t => t + 1)
   const animations = project?.data.animations ?? []
+  const skins = project?.data.skins ?? []
+  const sk = vp?.spine?.skeleton
+  const playingSeq = (vp?.queue.length ?? 0) > 1
+  // Epsilon so a time stepped to an exact frame boundary is not floored to the previous frame.
+  const frame = time && fps ? Math.floor(time.t * fps.fps + 1e-6) : 0
+
+  async function snapshot() {
+    const blob = await vp?.snapshot()
+    if (!blob) return setErrors(es => [...es, 'Snapshot failed: the frame could not be encoded.'])
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `${project!.name}_${vp!.entry?.animation.name ?? 'pose'}_f${frame}.png`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href))
+  }
   const resize = (side: 'left' | 'right', dx: number) =>
     setCols(c => ({ ...c, [side]: Math.min(600, Math.max(160, c[side] + (side === 'left' ? dx : -dx))) }))
   const resizer = (side: 'left' | 'right') => <div className={`resizer ${side[0]}`} role="separator" aria-orientation="vertical" tabIndex={0}
@@ -307,27 +324,53 @@ function App() {
     </aside>
 
     <div className="bar">
-      <select disabled={!animations.length} value={anim} onChange={e => { setAnim(e.target.value); vp?.setAnimation(e.target.value) }} aria-label="Animation">
-        {animations.length ? animations.map(a => <option key={a.name}>{a.name}</option>) : <option>No animations</option>}
-      </select>
-      <button disabled={!time} onClick={() => { if (vp) vp.playing = !vp.playing }}>{vp?.playing ? 'Pause' : 'Play'}</button>
-      <button disabled={!time} onClick={() => vp?.restart()}>Restart</button>
-      <select value={vp?.speed ?? 1} onChange={e => { if (vp) vp.speed = +e.target.value; rerender() }} aria-label="Playback speed">
-        {[0.5, 1, 2, 4].map(x => <option key={x} value={x}>{x}x</option>)}
-      </select>
-      <label><input type="checkbox" checked={vp?.loop ?? true} onChange={e => { vp?.setLoop(e.target.checked); rerender() }} /> Loop</label>
-      <button disabled={!time} onClick={() => { vp?.step(-1); rerender() }} aria-label="Step back one frame" title="Step back (fires no events)">◀︎</button>
-      <button disabled={!time} onClick={() => { vp?.step(1); rerender() }} aria-label="Step forward one frame" title="Step forward (fires events in the step)">▶︎</button>
-      <span className="muted" title={fps?.exported ? 'fps from the exported skeleton' : 'fps not exported (nonessential data); using the default'}>
-        {fps ? `${fps.fps} fps${fps.exported ? '' : ' (default)'}` : ''}
-      </span>
-      <input type="range" disabled={!time} min={0} max={time?.d ?? 1} step={0.001} value={time?.t ?? 0}
-        onChange={e => vp?.seek(+e.target.value)} aria-label="Animation time" />
-      <span className="time">{time ? `${time.t.toFixed(3)} / ${time.d.toFixed(3)} s` : '—'}</span>
-      <label title="AnimationStateData.defaultMix used when switching animations">
-        Mix <input type="number" min={0} step={0.05} value={vp?.mix ?? 0} style={{ width: 60 }}
-          onChange={e => { vp?.setMix(Math.max(0, +e.target.value || 0)); rerender() }} /> s
-      </label>
+      <div className="controls">
+        <select disabled={!animations.length} value={anim} onChange={e => { setAnim(e.target.value); vp?.setAnimation(e.target.value) }} aria-label="Animation">
+          {animations.length ? animations.map(a => <option key={a.name}>{a.name}</option>) : <option>No animations</option>}
+        </select>
+        <label title={skins.length > 1 ? 'Skeleton.setSkin, then slots back to setup pose' : 'This skeleton has only one skin'}>
+          Skin <select disabled={skins.length < 2} value={sk?.skin?.name ?? project?.data.defaultSkin?.name ?? ''} aria-label="Skin"
+            onChange={e => { vp?.setSkin(e.target.value); rerender() }}>
+            {skins.length ? skins.map(s => <option key={s.name}>{s.name}</option>) : <option value="">No skins</option>}
+          </select>
+        </label>
+        <button disabled={!time} onClick={() => { if (vp) vp.playing = !vp.playing }}>{vp?.playing ? 'Pause' : 'Play'}</button>
+        <button disabled={!time} onClick={() => vp?.restart()} title="Restart the animation or sequence from its start">Restart</button>
+        <select value={vp?.speed ?? 1} onChange={e => { if (vp) vp.speed = +e.target.value; rerender() }} aria-label="Playback speed">
+          {[0.25, 0.5, 1, 2, 4].map(x => <option key={x} value={x}>{x}x</option>)}
+        </select>
+        <label title="Loop the animation (in a sequence, the last one)"><input type="checkbox" checked={vp?.loop ?? true} onChange={e => { vp?.setLoop(e.target.checked); rerender() }} /> Loop</label>
+        <button disabled={!time} onClick={() => { vp?.step(-1); rerender() }} aria-label="Step back one frame" title="Step back (fires no events)">◀︎</button>
+        <button disabled={!time} onClick={() => { vp?.step(1); rerender() }} aria-label="Step forward one frame" title="Step forward (fires events in the step)">▶︎</button>
+        <label title="AnimationStateData.defaultMix used when switching animations">
+          Mix <input type="number" min={0} step={0.05} value={vp?.mix ?? 0} style={{ width: 60 }}
+            onChange={e => { vp?.setMix(Math.max(0, +e.target.value || 0)); rerender() }} /> s
+        </label>
+        <button disabled={!time} onClick={snapshot} title="Save the current frame as PNG (viewport, overlays included, transparent background)">Snapshot</button>
+      </div>
+      <div className="controls seq" aria-label="Animation sequence">
+        <span className="muted" title="Plays each animation once, then the next, like setAnimation + addAnimation in a game. The last one follows Loop.">Sequence</span>
+        {seq.map((a, i) => <span key={i} className={`chip${playingSeq && vp?.queueIndex === i ? ' on' : ''}`}>
+          {i > 0 && <span className="muted">→ </span>}{a}
+          <button aria-label={`Remove ${a} from sequence`} onClick={() => setSeq(s => s.filter((_, j) => j !== i))}>×</button>
+        </span>)}
+        <select disabled={!animations.length} value="" aria-label="Add to sequence" onChange={e => setSeq(s => [...s, e.target.value])}>
+          <option value="" disabled>+ add…</option>
+          {animations.map(a => <option key={a.name}>{a.name}</option>)}
+        </select>
+        <button disabled={!seq.length || !project} onClick={() => { vp?.play(seq); if (vp) vp.playing = true; rerender() }}>Run sequence</button>
+        <button disabled={!seq.length} onClick={() => setSeq([])} aria-label="Empty sequence">Empty</button>
+      </div>
+      {vp && <Timeline vp={vp} />}
+      <div className="controls frameinfo">
+        <span>{time ? <><b>{vp?.entry?.animation.name}</b>{playingSeq && ` (${vp!.queueIndex + 1}/${vp!.queue.length})`}</> : '—'}</span>
+        <span className="time">{time ? `${time.t.toFixed(3)} / ${time.d.toFixed(3)} s` : '—'}</span>
+        <span>{time && fps ? `frame ${frame} / ${Math.round(time.d * fps.fps)}` : ''}</span>
+        <span className="muted" title={fps?.exported ? 'fps from the exported skeleton' : 'fps not exported (nonessential data); using the default'}>
+          {fps ? `${fps.fps} fps${fps.exported ? '' : ' (default)'}` : ''}
+        </span>
+        {vp?.entry?.mixingFrom && <span className="muted">mixing from {vp.entry.mixingFrom.animation.name} ({n(vp.entry.mixTime)} / {n(vp.entry.mixDuration)} s)</span>}
+      </div>
     </div>
   </div>
 }

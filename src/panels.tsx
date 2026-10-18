@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { MixBlend } from '@pixi-spine/all-3.8'
-import { metrics, type Sel } from './spine'
+import { keyMarks, metrics, type Sel } from './spine'
 import type { Viewport } from './viewport'
 
 export const n = (v: number) => (Number.isFinite(v) ? String(+v.toFixed(3)) : String(v))
@@ -72,6 +72,41 @@ export function EventMonitor({ vp }: { vp: Viewport }) {
         </td>
       </tr>)}
     </tbody></table>}
+  </>
+}
+
+// Full-width frame ruler: a tick per frame, labelled frame numbers, key and event markers, and the playhead.
+// A transparent native range input on top does the seeking, so keyboard and tests keep working.
+export function Timeline({ vp }: { vp: Viewport }) {
+  const e = vp.entry, f = vp.fps
+  const anim = e?.animation
+  // Re-render on seek so the controlled range shows the new time at once; otherwise React restores the
+  // stale value and the following change event seeks back to it.
+  const [, rerender] = useState(0)
+  const seek = (x: number) => { vp.seek(x); rerender(r => r + 1) }
+  const marks = useMemo(() => (anim ? keyMarks(anim) : { keys: [], events: [] }), [anim])
+  const d = anim?.duration ?? 0, fps = f?.fps ?? 30, t = e?.getAnimationTime() ?? 0
+  const frames = Math.round(d * fps)
+  const pct = (x: number) => `${d ? (x / d) * 100 : 0}%`
+  // ponytail: label density assumes a ruler of ~1000 px; measure it if labels crowd on narrow screens.
+  const label = [1, 2, 5, 10, 20, 50, 100, 200, 500].find(s => frames / s <= 25) ?? 1000
+  const minor = Math.max(1, Math.ceil(frames / 500))
+  const ticks: ReactNode[] = []
+  for (let i = 0; i <= frames; i += minor) ticks.push(<i key={i} className={i % label ? 'tick' : 'tick major'} style={{ left: pct(i / fps) }}>
+    {i % label ? null : <span>{i}</span>}
+  </i>)
+  return <>
+    <div className="ruler">
+      {ticks}
+      {marks.keys.map(k => <i key={k} className="keymark" style={{ left: pct(k) }} />)}
+      <i className="head" style={{ left: pct(t) }} />
+      <input type="range" disabled={!e} min={0} max={d || 1} step={0.001} value={t}
+        onChange={ev => seek(+ev.target.value)} aria-label="Animation time" />
+    </div>
+    <div className="lane" aria-label="Events on this animation">
+      {marks.events.map((ev, i) => <button key={i} className="evmark" style={{ left: pct(ev.time) }} title={`${ev.name} · ${n(ev.time)} s · frame ${n(ev.time * fps)}`}
+        onClick={() => seek(ev.time)}>{ev.name}</button>)}
+    </div>
   </>
 }
 

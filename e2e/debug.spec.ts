@@ -110,3 +110,30 @@ test('loop off holds the last frame; loop on wraps', async ({ page }) => {
   await expect.poll(t).toBeLessThan(dur)
   expect(errors).toEqual([])
 })
+
+test('skin select, animation sequence, frame ruler, snapshot', async ({ page }) => {
+  const errors = await open(page)
+  await expect(page.getByLabel('Skin', { exact: true })).toHaveValue('default')
+
+  for (const a of ['idle', 'jump', 'hoverboard']) await page.selectOption('select[aria-label="Add to sequence"]', a)
+  await page.selectOption('select[aria-label="Playback speed"]', '4')
+  await page.getByRole('button', { name: 'Run sequence' }).click()
+  await expect(page.locator('.frameinfo')).toContainText('idle (1/3)')
+  await expect(page.locator('.frameinfo')).toContainText('hoverboard (3/3)', { timeout: 5000 })
+  // The last animation loops by default, so the sequence stays on it.
+  await page.waitForTimeout(1000)
+  await expect(page.locator('.frameinfo')).toContainText('hoverboard (3/3)')
+  await page.getByRole('button', { name: 'Restart' }).click()
+  await expect(page.locator('.frameinfo')).toContainText('(1/3)')
+
+  await page.getByRole('button', { name: 'Pause' }).click()
+  await page.locator('input[aria-label="Animation time"]').fill('0.4')
+  await expect(page.locator('.frameinfo')).toContainText('frame 12 /')
+  await expect(page.locator('.ruler .keymark').first()).toBeAttached()
+  await page.screenshot({ path: 'test-results/timeline.png' })
+
+  const download = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Snapshot' }).click()
+  expect((await download).suggestedFilename()).toBe('spineboy-pro_idle_f12.png')
+  expect(errors).toEqual([])
+})

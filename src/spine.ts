@@ -1,6 +1,6 @@
 import type { BaseTexture } from 'pixi.js'
 import {
-  AtlasAttachmentLoader, AttachmentType, BinaryInput, Bone, CurveTimeline, DeformTimeline, SkeletonBinary, SkeletonJson, TextureAtlas,
+  AtlasAttachmentLoader, AttachmentType, BinaryInput, Bone, CurveTimeline, DeformTimeline, EventTimeline, SkeletonBinary, SkeletonJson, TextureAtlas,
   type Animation, type Attachment, type ClippingAttachment, type MeshAttachment, type RegionAttachment, type Skeleton, type SkeletonData,
   type Slot, type SlotData, type TrackEntry,
 } from '@pixi-spine/all-3.8'
@@ -131,6 +131,19 @@ export function seekTrack(e: TrackEntry, t: number) {
   t = Math.max(0, Math.min(t, e.animation.duration - 1e-4))
   e.trackTime = e.trackLast = e.nextTrackLast = t
   e.animationLast = e.nextAnimationLast = t
+}
+
+// Key times across all timelines (deduped, sorted) and events, for the timeline ruler.
+// Every 3.8 timeline stores getFrameCount() keys of equal stride in `frames`, time first.
+export function keyMarks(anim: Animation) {
+  const keys = new Set<number>(), events: { time: number; name: string }[] = []
+  for (const t of anim.timelines) {
+    if (t instanceof EventTimeline) { for (const e of t.events) events.push({ time: e.time, name: e.data.name }); continue }
+    const tl = t as unknown as { frames: ArrayLike<number>; getFrameCount(): number }
+    const c = tl.getFrameCount(), stride = tl.frames.length / c
+    for (let i = 0; i < c; i++) keys.add(tl.frames[i * stride])
+  }
+  return { keys: [...keys].sort((a, b) => a - b), events }
 }
 
 // Frame step for single-stepping; skeleton fps is nonessential data in 3.8.

@@ -8,10 +8,11 @@ import { frameRate, geometry, seekTrack, type Sel } from './spine'
 const HIGHLIGHT = 0x00e5ff
 const BONE = 0x76ff03
 const HIERARCHY = 0x9e9e9e
+const AXIS = 0xbdbdbd
 const MAX_EVENTS = 500
 
 export const OVERLAYS = {
-  bones: 'Bones', names: 'Bone names', hierarchy: 'Hierarchy',
+  axes: 'Axes', bones: 'Bones', names: 'Bone names', hierarchy: 'Hierarchy',
   regions: 'Regions', meshes: 'Meshes', bboxes: 'Bounding boxes', clipping: 'Clipping', paths: 'Paths',
 } as const
 export type Overlay = keyof typeof OVERLAYS
@@ -32,6 +33,7 @@ export class Viewport {
   world = new Container()
   overlay = new Graphics()
   bones = new Graphics()
+  axes = new Graphics()
   labels = new Container()
   debug = new SpineDebugRenderer()
   overlays = Object.fromEntries(Object.keys(OVERLAYS).map(k => [k, false])) as Record<Overlay, boolean>
@@ -42,6 +44,7 @@ export class Viewport {
   mix = 0
   sel: Sel = null
   events: LoggedEvent[] = []
+  queue: string[] = []
   private seq = 0
   onPick?: (s: Sel) => void
 
@@ -49,6 +52,7 @@ export class Viewport {
     // SpineDebugRenderer starts with every overlay on; bones are drawn by drawBones() instead.
     this.debug.drawBones = false
     this.setOverlay('regions', false)
+    this.overlays.axes = true
     this.app = new Application({ resizeTo: host, background: '#262626', antialias: true, resolution: devicePixelRatio, autoDensity: true })
     host.appendChild(this.app.view as HTMLCanvasElement)
     this.app.stage.addChild(this.world)
@@ -59,6 +63,7 @@ export class Viewport {
       this.spine.update(this.playing ? this.app.ticker.deltaMS / 1000 * this.speed : 0)
       this.drawOverlay()
       this.drawBones()
+      this.drawAxes()
     })
     this.bindInput(this.app.view as HTMLCanvasElement)
     // resizeTo only tracks window resizes; panel drags change the host size too.
@@ -79,7 +84,7 @@ export class Viewport {
     this.spine = s
     for (const b of data.bones)
       this.labels.addChild(new Text(b.name, { fontSize: 11, fill: 0xffffff, stroke: 0x000000, strokeThickness: 3 }))
-    this.world.addChild(s, this.bones, this.labels, this.overlay)
+    this.world.addChild(this.axes, s, this.bones, this.labels, this.overlay)
     s.update(0)
     this.fit()
   }
@@ -89,10 +94,12 @@ export class Viewport {
     this.spine?.destroy({ children: true })
     this.labels.removeChildren().forEach(l => l.destroy())
     this.bones.clear()
+    this.axes.clear()
     this.spine = null
     this.playing = false
     this.sel = null
     this.events = []
+    this.queue = []
   }
 
   setOverlay(k: Overlay, on: boolean) {
@@ -130,19 +137,51 @@ export class Viewport {
     if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS)
   }
 
-  setAnimation(name: string) {
+  setAnimation(name: string) { this.play([name]) }
+
+  // Queues animations on track 0 as a game would: each plays once, then the next starts (crossfading by
+  // the default mix); only the last one follows the Loop setting.
+  play(names: string[]) {
     const s = this.spine
-    if (!s) return
+    if (!s || !names.length) return
+    this.queue = names
     // Without mixing, start from the setup pose so the previous animation leaves nothing behind.
     if (!this.mix) s.skeleton.setToSetupPose()
-    s.state.setAnimation(0, name, this.loop)
+    names.forEach((n, i) => {
+      const loop = i === names.length - 1 && this.loop
+      if (i) s.state.addAnimation(0, n, loop, 0)
+      else s.state.setAnimation(0, n, loop)
+    })
     s.update(0)
   }
 
-  // Applies to the playing entry too, so turning loop off finishes the current cycle and holds the last frame.
+  // Position of the playing entry in the queue: entries still queued after it are counted from the end.
+  get queueIndex() {
+    let left = 0
+    for (let e = this.entry?.next; e; e = e.next) left++
+    return this.queue.length - 1 - left
+  }
+
+  // Applies to the playing entry when it is the last in the queue, so turning loop off finishes the
+  // current cycle and holds the last frame.
   setLoop(on: boolean) {
     this.loop = on
-    if (this.entry) this.entry.loop = on
+    const e = this.entry
+    if (e && !e.next) e.loop = on
+  }
+
+  setSkin(name: string) {
+    const s = this.spine
+    if (!s) return
+    s.skeleton.setSkinByName(name)
+    s.skeleton.setSlotsToSetupPose()
+    s.update(0)
+  }
+
+  // The visible viewport (skeleton + overlays) on a transparent background.
+  snapshot() {
+    const c = this.app.renderer.extract.canvas(this.app.stage, this.app.screen) as HTMLCanvasElement
+    return new Promise<Blob | null>(r => c.toBlob(r, 'image/png'))
   }
 
   get entry() { return this.spine?.state.tracks[0] ?? null }
@@ -159,11 +198,10 @@ export class Viewport {
     this.spine!.update(0)
   }
 
-  // Restarting re-sets the animation, so its time-0 events fire as they would in a game.
+  // Restarting re-queues the whole sequence, so its time-0 events fire as they would in a game.
   restart() {
-    const e = this.entry
-    if (!e) return
-    this.setAnimation(e.animation.name)
+    if (!this.entry) return
+    this.play(this.queue)
     this.playing = true
   }
 
@@ -233,6 +271,19 @@ export class Viewport {
     g.moveTo(geo.v[0], geo.v[1])
     for (let i = 1; i < geo.hull; i++) g.lineTo(geo.v[i * 2], geo.v[i * 2 + 1])
     g.closePath()
+  }
+
+  // Skeleton origin axes, drawn under the skeleton across the visible area, like the Spine editor.
+  private drawAxes() {
+    const g = this.axes, w = this.world, z = w.scale.x, { width: W, height: H } = this.app.screen
+    g.clear()
+    if (!this.overlays.axes) return
+    const x0 = -w.x / z, x1 = (W - w.x) / z, y0 = -w.y / z, y1 = (H - w.y) / z
+    // Pixi Graphics has no dash style: 6 px dash, 4 px gap on screen, anchored to the origin so dashes don't crawl on pan.
+    const dash = 6 / z, period = 10 / z
+    g.lineStyle(1 / z, AXIS, 0.6)
+    for (let a = Math.floor(x0 / period) * period; a < x1; a += period) g.moveTo(a, 0).lineTo(a + dash, 0)
+    for (let a = Math.floor(y0 / period) * period; a < y1; a += period) g.moveTo(0, a).lineTo(0, a + dash)
   }
 
   private drawBones() {

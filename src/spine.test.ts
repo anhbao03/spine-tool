@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { BaseTexture } from 'pixi.js'
 import { AnimationState, AnimationStateData, Skeleton } from '@pixi-spine/all-3.8'
-import { buildTree, filterTree, frameRate, gate, limitations, loadSkeleton, metrics, seekTrack, type TreeNode } from './spine'
+import { buildTree, filterTree, frameRate, gate, keyMarks, limitations, loadSkeleton, metrics, seekTrack, type TreeNode } from './spine'
 
 const fx = (p: string) => readFileSync(new URL(`../fixtures/${p}`, import.meta.url), 'utf8')
 // Node may hand back a view into a pooled buffer; the gate must cope with that.
@@ -202,5 +202,18 @@ describe('metrics', () => {
     expect(m.bezier).toBeGreaterThan(0)
     expect(m.bezier).toBeLessThan(m.keys)
     expect(metrics(sk, data.findAnimation('portal')).deform).toBeGreaterThan(0)
+  })
+})
+
+describe('timeline ruler marks', () => {
+  const data = load(JSON.parse(json38))
+  it('lists sorted unique key times and the events of an animation', () => {
+    const run = data.findAnimation('run')
+    const { keys, events } = keyMarks(run)
+    expect(keys[0]).toBe(0)
+    expect(keys.at(-1)).toBeLessThanOrEqual(run.duration)
+    expect(keys).toEqual([...new Set(keys)].sort((a, b) => a - b))
+    expect(events.map(e => e.name)).toContain('footstep')
+    expect(keyMarks(data.findAnimation('idle')).events).toEqual([])
   })
 })
