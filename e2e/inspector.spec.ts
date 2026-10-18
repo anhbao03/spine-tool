@@ -55,9 +55,22 @@ test('P1-08: other versions are blocked with the detected version', async ({ pag
   await page.goto('/')
   await importFiles(page, ['fixtures/version-mismatch/spineboy-4.0.json', sb('spineboy.atlas'), sb('spineboy.png')])
   await expect(page.getByRole('alert')).toContainText('Spine 4.0.31 detected')
-  await importFiles(page, ['fixtures/version-mismatch/spineboy-3.8.skel', sb('spineboy.atlas'), sb('spineboy.png')])
-  await expect(page.getByRole('alert').last()).toContainText('binary .skel is not supported yet')
+  await importFiles(page, ['fixtures/version-mismatch/spineboy-4.0.skel', sb('spineboy.atlas'), sb('spineboy.png')])
+  await expect(page.getByRole('alert').last()).toContainText('spineboy-4.0.skel: Spine 4.0.31 detected')
   await expect(page.locator('header')).not.toContainText('Spine 4')
+})
+
+test('binary .skel loads and plays', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', e => errors.push(e.message))
+  await page.goto('/')
+  await importFiles(page, [sb('spineboy-pro.skel'), sb('spineboy.atlas'), sb('spineboy.png')])
+  await expect(page.locator('header')).toContainText('spineboy-pro · Spine 3.8.55 binary')
+  await expect(page.locator('[id="slot:head"]')).toBeVisible()
+  await page.selectOption('select[aria-label=Animation]', 'walk')
+  await page.getByRole('button', { name: 'Play' }).click()
+  await expect(page.locator('details', { hasText: 'Events' }).first()).toContainText('footstep')
+  expect(errors).toEqual([])
 })
 
 test('tree search filters to matches and their ancestors', async ({ page }) => {

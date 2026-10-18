@@ -4,8 +4,8 @@
 **Project:** Spine Inspector & Painter\
 **Primary stack:** React, TypeScript, PixiJS\
 **Initial runtime target:** Spine **3.8.x** JSON + 3.8-format atlas
-(see "Spine 3.8 Baseline"); 4.x and binary `.skel` are detected and
-reported as unsupported until explicitly added\
+or binary `.skel` + 3.8-format atlas (see "Spine 3.8 Baseline"); 4.x
+is detected and reported as unsupported until explicitly added\
 **Status:** Proposed\
 **Purpose:** Define five incremental phases for building, validating,
 and expanding a Spine inspection and editing tool.
@@ -59,14 +59,21 @@ to 3.8 and must be revisited before adding 4.x.
 
 **Version gate (runs before the runtime parser)**
 
--   Read `skeleton.spine`; accept only `3.8.*`. Anything else is
-    reported with the detected version.
+-   JSON: read `skeleton.spine`. Binary: read the version from the file
+    header (3.x writes the hash then the version as strings; 4.x writes
+    an 8-byte hash then the version, so 4.x binaries are still named
+    correctly). Accept only `3.8.*`; anything else is reported with the
+    detected version.
 -   Reason: the 3.8 runtime does not reject older/newer data reliably.
     Example: 3.7 JSON stores `skins` as an object; the 3.8 parser
     iterates it as an array and silently loads **zero skins**. The gate
     must catch this rather than relying on runtime exceptions.
--   Binary `.skel` is out of scope for Phase 1--3 and must produce a
-    clear "binary not supported yet" message (common in Cocos projects).
+-   Binary `.skel` (common in Cocos projects) is supported through the
+    runtime's `SkeletonBinary`. Binaries from editor 3.8.75 are rejected
+    with a re-export message; that export is not readable by the 3.8
+    runtime.
+-   Phase 3 edits of a binary project are exported as 3.8 JSON (which
+    Spine Editor 3.8 imports); the tool does not write binary.
 
 **3.8 data shapes the tool must handle**
 
@@ -132,8 +139,8 @@ Create and keep a small fixture library in the repository:
     performance checks.
 8.  `bbox-sample/` --- a project with known polygon bounding boxes and
     vertices.
-9.  `version-mismatch/` --- the same small skeleton exported as 3.7 JSON,
-    4.0+ JSON, and 3.8 binary `.skel`, for the version gate.
+9.  `version-mismatch/` --- the same small skeleton exported as 3.7 and
+    4.0+, each as JSON and binary `.skel`, for the version gate.
 10. `pma/` --- one 3.8 export with premultiplied alpha and one without.
 11. `atlas-edge-cases/` --- multi-page atlas, rotated regions, stripped
     whitespace, and an attachment using `path` to a different region.
@@ -298,15 +305,16 @@ files.
 
 ### P1-08 --- Unsupported data and version handling
 
-**Setup:** Use `version-mismatch/` (3.7 JSON, 4.x JSON, 3.8 `.skel`)
+**Setup:** Use `version-mismatch/` (3.7 and 4.x, JSON and `.skel`)
 and a 3.8 fixture containing a feature the tool does not yet support.
 
 **Expected results:**
 
-- The tool displays a clear compatibility warning naming the detected `skeleton.spine` version.
+- The tool displays a clear compatibility warning naming the detected version (`skeleton.spine` for JSON, header for binary).
 - Wrong major.minor versions are **blocked**, not loaded in limited mode: the 3.8 runtime can misparse them silently (3.7 JSON loads with zero skins).
 - The 3.7 fixture is rejected by the version gate, not by a downstream render symptom.
-- Binary `.skel` reports "binary not supported yet" rather than a parse exception.
+- A binary named `.json`, or an unreadable `.skel`, gets a clear message rather than a parse exception.
+- A 3.8 `.skel` and the JSON export of the same project load identical bones, slots, skins, animations, and events.
 - For a valid 3.8 file with an unsupported feature, the user can cancel or continue in a clearly limited mode, and the affected feature is named.
 - Unsupported fields or features are not silently presented as correctly rendered.
 

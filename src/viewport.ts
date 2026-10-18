@@ -1,8 +1,25 @@
-import { Application, Container, Graphics, Point } from 'pixi.js'
-import { AttachmentType, Spine, type Attachment, type MeshAttachment, type RegionAttachment, type SkeletonData, type Slot } from '@pixi-spine/all-3.8'
-import type { Sel } from './spine'
+import { Application, Container, Graphics, Point, Text } from 'pixi.js'
+import {
+  AttachmentType, Spine, SpineDebugRenderer,
+  type Attachment, type Event, type MeshAttachment, type RegionAttachment, type SkeletonData, type Slot, type TrackEntry,
+} from '@pixi-spine/all-3.8'
+import { frameRate, seekTrack, type Sel } from './spine'
 
 const HIGHLIGHT = 0x00e5ff
+const BONE = 0x76ff03
+const HIERARCHY = 0x9e9e9e
+const MAX_EVENTS = 500
+
+export const OVERLAYS = {
+  bones: 'Bones', names: 'Bone names', hierarchy: 'Hierarchy',
+  regions: 'Regions', meshes: 'Meshes', bboxes: 'Bounding boxes', clipping: 'Clipping', paths: 'Paths',
+} as const
+export type Overlay = keyof typeof OVERLAYS
+
+export interface LoggedEvent {
+  seq: number; name: string; time: number; trackTime: number; animation: string
+  int: number; float: number; string: string; audio: string; volume: number; balance: number
+}
 
 // Coordinates here are Spine-container local space, which pixi-spine keeps y-down.
 function geometry(slot: Slot, att: Attachment | null): { v: number[]; tris: number[]; hull: number } | null {
@@ -31,31 +48,54 @@ export class Viewport {
   app: Application
   world = new Container()
   overlay = new Graphics()
+  bones = new Graphics()
+  labels = new Container()
+  debug = new SpineDebugRenderer()
+  overlays = Object.fromEntries(Object.keys(OVERLAYS).map(k => [k, false])) as Record<Overlay, boolean>
   spine: Spine | null = null
   playing = false
+  speed = 1
+  mix = 0
   sel: Sel = null
+  events: LoggedEvent[] = []
+  private seq = 0
   onPick?: (s: Sel) => void
 
   constructor(host: HTMLElement) {
+    // SpineDebugRenderer starts with every overlay on; bones are drawn by drawBones() instead.
+    this.debug.drawBones = false
+    this.setOverlay('regions', false)
     this.app = new Application({ resizeTo: host, background: '#262626', antialias: true, resolution: devicePixelRatio, autoDensity: true })
     host.appendChild(this.app.view as HTMLCanvasElement)
     this.app.stage.addChild(this.world)
     this.app.ticker.add(() => {
       if (!this.spine) return
-      this.spine.update(this.playing ? this.app.ticker.deltaMS / 1000 : 0)
+      // Debug line widths are in skeleton units; keep them ~1.5 px on screen at any zoom.
+      this.debug.lineWidth = 1.5 / this.world.scale.x
+      this.spine.update(this.playing ? this.app.ticker.deltaMS / 1000 * this.speed : 0)
       this.drawOverlay()
+      this.drawBones()
     })
     this.bindInput(this.app.view as HTMLCanvasElement)
+    // resizeTo only tracks window resizes; panel drags change the host size too.
+    this.resizer.observe(host)
   }
 
-  destroy() { this.unload(); this.app.destroy(true) }
+  private resizer = new ResizeObserver(() => this.app.resize())
+
+  destroy() { this.resizer.disconnect(); this.unload(); this.app.destroy(true) }
 
   load(data: SkeletonData) {
     this.unload()
     const s = new Spine(data)
     s.autoUpdate = false
+    s.debug = this.debug
+    s.stateData.defaultMix = this.mix
+    s.state.addListener({ event: (entry, e) => this.logEvent(entry, e) })
     this.spine = s
-    this.world.addChild(s, this.overlay)
+    for (const b of data.bones)
+      this.labels.addChild(new Text(b.name, { fontSize: 11, fill: 0xffffff, stroke: 0x000000, strokeThickness: 3 }))
+    this.world.addChild(s, this.bones, this.labels, this.overlay)
     s.update(0)
     this.fit()
   }
@@ -63,15 +103,54 @@ export class Viewport {
   unload() {
     this.world.removeChildren()
     this.spine?.destroy({ children: true })
+    this.labels.removeChildren().forEach(l => l.destroy())
+    this.bones.clear()
     this.spine = null
     this.playing = false
     this.sel = null
+    this.events = []
+  }
+
+  setOverlay(k: Overlay, on: boolean) {
+    this.overlays[k] = on
+    const d = this.debug, o = this.overlays
+    d.drawRegionAttachments = o.regions
+    d.drawMeshHull = d.drawMeshTriangles = o.meshes
+    d.drawBoundingBoxes = o.bboxes
+    d.drawClipping = o.clipping
+    d.drawPaths = o.paths
+  }
+
+  setMix(seconds: number) {
+    this.mix = seconds
+    if (this.spine) this.spine.stateData.defaultMix = seconds
+  }
+
+  get fps() { return this.spine ? frameRate(this.spine.skeleton.data) : null }
+
+  // Forward steps advance like playback (events in the stepped range fire); backward steps seek and fire none.
+  step(dir: 1 | -1) {
+    const e = this.entry, f = this.fps
+    if (!e || !f) return
+    this.playing = false
+    if (dir > 0) this.spine!.update(1 / f.fps)
+    else this.seek(e.getAnimationTime() - 1 / f.fps)
+  }
+
+  private logEvent(entry: TrackEntry, e: Event) {
+    const d = e.data
+    this.events.push({
+      seq: ++this.seq, name: d.name, time: e.time, trackTime: entry.trackTime, animation: entry.animation.name,
+      int: e.intValue, float: e.floatValue, string: e.stringValue, audio: d.audioPath, volume: e.volume, balance: e.balance,
+    })
+    if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS)
   }
 
   setAnimation(name: string) {
     const s = this.spine
     if (!s) return
-    s.skeleton.setToSetupPose()
+    // Without mixing, start from the setup pose so the previous animation leaves nothing behind.
+    if (!this.mix) s.skeleton.setToSetupPose()
     s.state.setAnimation(0, name, true)
     s.update(0)
   }
@@ -86,15 +165,17 @@ export class Viewport {
   seek(t: number) {
     const e = this.entry
     if (!e) return
-    // ponytail: clamp just below the end, since a looping entry wraps t === duration back to 0.
-    t = Math.max(0, Math.min(t, e.animation.duration - 1e-4))
-    // Move animationLast with the time so a seek crosses no events (plan P2-05).
-    e.trackTime = t
-    e.animationLast = e.nextAnimationLast = t
+    seekTrack(e, t)
     this.spine!.update(0)
   }
 
-  restart() { this.seek(0); this.playing = true }
+  // Restarting re-sets the animation, so its time-0 events fire as they would in a game.
+  restart() {
+    const e = this.entry
+    if (!e) return
+    this.setAnimation(e.animation.name)
+    this.playing = true
+  }
 
   zoomAt(x: number, y: number, f: number) {
     const w = this.world
@@ -162,6 +243,29 @@ export class Viewport {
     g.moveTo(geo.v[0], geo.v[1])
     for (let i = 1; i < geo.hull; i++) g.lineTo(geo.v[i * 2], geo.v[i * 2 + 1])
     g.closePath()
+  }
+
+  private drawBones() {
+    const g = this.bones, o = this.overlays, sk = this.spine!.skeleton, z = this.world.scale.x
+    g.clear()
+    this.labels.visible = o.names
+    const w = 1.5 / z
+    sk.bones.forEach((b, i) => {
+      if (o.hierarchy && b.parent)
+        g.lineStyle(w, HIERARCHY, 0.7).moveTo(b.parent.worldX, b.parent.worldY).lineTo(b.worldX, b.worldY)
+      if (o.bones) {
+        g.lineStyle(w, BONE)
+        // Bone tip = origin + length along the bone's world x axis (pixi matrix a, b).
+        const m = b.matrix, len = b.data.length
+        if (len) g.moveTo(b.worldX, b.worldY).lineTo(b.worldX + len * m.a, b.worldY + len * m.b)
+        g.drawCircle(b.worldX, b.worldY, 3 * w)
+      }
+      if (o.names) {
+        const l = this.labels.children[i]
+        l.position.set(b.worldX + 4 * w, b.worldY - 14 / z)
+        l.scale.set(1 / z)
+      }
+    })
   }
 
   private bindInput(c: HTMLCanvasElement) {

@@ -6,10 +6,11 @@ import {
   type Attachment, type Color, type MeshAttachment, type PointAttachment, type RegionAttachment, type SkeletonData, type VertexAttachment,
 } from '@pixi-spine/all-3.8'
 import { buildTree, filterTree, gate, limitations, loadSkeleton, selId, type Sel, type TreeNode } from './spine'
-import { Viewport } from './viewport'
+import { OVERLAYS, Viewport, type Overlay } from './viewport'
+import { AnimationStatePanel, EventMonitor, n, Props, SlotMonitor } from './panels'
 
 interface Project {
-  name: string; version: string; data: SkeletonData; warnings: string[]; tree: TreeNode[]
+  name: string; version: string; format: 'json' | 'binary'; data: SkeletonData; warnings: string[]; tree: TreeNode[]
   textures: BaseTexture[]; urls: string[]
 }
 
@@ -24,12 +25,12 @@ const names = (fs: File[]) => (fs.length ? fs.map(f => f.name).join(', ') : 'non
 async function importFiles(files: File[], pma: boolean): Promise<Project> {
   const skel = files.filter(f => /\.(json|skel)(\.bytes)?$/i.test(f.name))
   const atlases = files.filter(f => /\.atlas(\.txt)?$/i.test(f.name))
-  if (skel.length !== 1) throw new Error(`Expected one skeleton .json file, got ${names(skel)}.`)
+  if (skel.length !== 1) throw new Error(`Expected one skeleton file (.json or .skel), got ${names(skel)}.`)
   if (atlases.length !== 1) throw new Error(`Expected one .atlas file, got ${names(atlases)}.`)
-  const g = gate(skel[0].name, await skel[0].text())
+  const g = gate(skel[0].name, new Uint8Array(await skel[0].arrayBuffer()))
   if (!g.ok) throw new Error(g.error)
 
-  const p: Project = { name: skel[0].name.replace(/\.json$/i, ''), version: g.version, data: null!, warnings: limitations(g.json), tree: [], textures: [], urls: [] }
+  const p: Project = { name: skel[0].name.replace(/\.(json|skel(\.bytes)?)$/i, ''), version: g.version, format: g.format, data: null!, warnings: [], tree: [], textures: [], urls: [] }
   try {
     // The atlas parser asks for pages synchronously, so decode every image first.
     const images = new Map<string, HTMLImageElement>()
@@ -41,7 +42,7 @@ async function importFiles(files: File[], pma: boolean): Promise<Project> {
       await img.decode().catch(() => { throw new Error(`${f.name}: image could not be decoded.`) })
       images.set(f.name, img)
     }
-    p.data = loadSkeleton(skel[0].name, g.json, atlases[0].name, await atlases[0].text(), page => {
+    p.data = loadSkeleton(skel[0].name, g, atlases[0].name, await atlases[0].text(), page => {
       const img = images.get(page) ?? images.get(page.split('/').pop()!)
       if (!img) return undefined
       // 3.8 atlases carry no pma flag, so PMA is a user setting.
@@ -50,11 +51,11 @@ async function importFiles(files: File[], pma: boolean): Promise<Project> {
       return t
     })
     p.tree = buildTree(p.data)
+    p.warnings = limitations(p.data)
     return p
   } catch (e) { dispose(p); throw e }
 }
 
-const n = (v: number) => (Number.isFinite(v) ? String(+v.toFixed(3)) : String(v))
 const hex = (c: Color, alpha = true) =>
   (alpha ? [c.r, c.g, c.b, c.a] : [c.r, c.g, c.b]).map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('')
 const color = (c: Color | null, alpha = true) =>
@@ -64,9 +65,6 @@ const TRANSFORM = ['normal', 'onlyTranslation', 'noRotationOrReflection', 'noSca
 const NONE = new Set<string>()
 const empty = <span className="muted">(empty)</span>
 
-function Props({ title, rows }: { title: string; rows: [string, ReactNode][] }) {
-  return <><h3>{title}</h3><table><tbody>{rows.map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}</tbody></table></>
-}
 
 function attachmentRows(a: Attachment): [string, ReactNode][] {
   const rows: [string, ReactNode][] = [['type', AttachmentType[a.type]]]
@@ -158,6 +156,7 @@ function App() {
   const [collapsed, setCollapsed] = useState(new Set<string>())
   const [query, setQuery] = useState('')
   const [, tick] = useState(0)
+  const [cols, setCols] = useState({ left: 280, right: 340 })
 
   useEffect(() => {
     let v: Viewport
@@ -167,6 +166,8 @@ function App() {
     }
     v.onPick = setSel
     vpRef.current = v
+    // Dev-only hook so e2e tests can read frames via Pixi; canvas screenshots of WebGL are unreliable headless.
+    if (import.meta.env.DEV) Object.assign(window, { vp: v })
     // Runtime values are polled for the UI (10 Hz); rendering itself runs on the Pixi ticker.
     const id = setInterval(() => tick(t => t + 1), 100)
     return () => { clearInterval(id); v.destroy() }
@@ -226,12 +227,26 @@ function App() {
   }
 
   const time = vp?.time()
+  const fps = vp?.fps
+  const rerender = () => tick(t => t + 1)
   const animations = project?.data.animations ?? []
+  const resize = (side: 'left' | 'right', dx: number) =>
+    setCols(c => ({ ...c, [side]: Math.min(600, Math.max(160, c[side] + (side === 'left' ? dx : -dx))) }))
+  const resizer = (side: 'left' | 'right') => <div className={`resizer ${side[0]}`} role="separator" aria-orientation="vertical" tabIndex={0}
+    aria-label={`Resize ${side === 'left' ? 'skeleton tree' : 'inspector'}`} aria-valuenow={cols[side]} aria-valuemin={160} aria-valuemax={600}
+    onKeyDown={e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') resize(side, e.key === 'ArrowLeft' ? -16 : 16) }}
+    onPointerDown={e => {
+      e.preventDefault()
+      let x = e.clientX
+      const move = (m: PointerEvent) => { resize(side, m.clientX - x); x = m.clientX }
+      const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up) }
+      addEventListener('pointermove', move); addEventListener('pointerup', up)
+    }} />
 
-  return <div className="app" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); open([...e.dataTransfer.files]) }}>
+  return <div className="app" style={{ '--left': `${cols.left}px`, '--right': `${cols.right}px` } as React.CSSProperties} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); open([...e.dataTransfer.files]) }}>
     <header>
-      <span className="title">Spine Inspector{project && <span className="muted"> · {project.name} · Spine {project.version}</span>}</span>
-      <input ref={input} type="file" multiple hidden accept=".json,.atlas,.txt,.png,.jpg,.jpeg,.webp,.skel"
+      <span className="title">Spine Inspector{project && <span className="muted"> · {project.name} · Spine {project.version} {project.format}</span>}</span>
+      <input ref={input} type="file" multiple hidden accept=".json,.skel,.bytes,.atlas,.txt,.png,.jpg,.jpeg,.webp"
         onChange={e => { open([...(e.target.files ?? [])]); e.target.value = '' }} />
       <button onClick={() => input.current?.click()}>Import…</button>
       <label title="3.8 atlases do not record premultiplied alpha; match the export setting.">
@@ -267,11 +282,27 @@ function App() {
 
     <div className="stage">
       <div ref={host} />
-      {!project && <div className="drop">Drop a Spine 3.8 export here<br />(.json + .atlas + page images)</div>}
+      <fieldset className="overlays" disabled={!project}>
+        <legend>Overlays</legend>
+        {(Object.keys(OVERLAYS) as Overlay[]).map(k => <label key={k}>
+          <input type="checkbox" checked={!!vp?.overlays[k]} onChange={e => { vp?.setOverlay(k, e.target.checked); rerender() }} /> {OVERLAYS[k]}
+        </label>)}
+      </fieldset>
+      {!project && <div className="drop">Drop a Spine 3.8 export here<br />(.json or .skel + .atlas + page images)</div>}
     </div>
 
+    {resizer('left')}
+    {resizer('right')}
+
     <aside className="inspector" aria-label="Inspector">
-      {project && vp ? <Inspector project={project} sel={sel} vp={vp} /> : <p className="muted">Nothing to inspect.</p>}
+      <details open><summary>Selection</summary>
+        {project && vp ? <Inspector project={project} sel={sel} vp={vp} /> : <p className="muted">Nothing to inspect.</p>}
+      </details>
+      {project && vp && <>
+        <details open><summary>Animation state</summary><AnimationStatePanel vp={vp} /></details>
+        <details><summary>Slot monitor</summary><SlotMonitor vp={vp} selected={id} select={setSel} /></details>
+        <details open><summary>Events ({vp.events.length})</summary><EventMonitor vp={vp} /></details>
+      </>}
     </aside>
 
     <div className="bar">
@@ -280,9 +311,21 @@ function App() {
       </select>
       <button disabled={!time} onClick={() => { if (vp) vp.playing = !vp.playing }}>{vp?.playing ? 'Pause' : 'Play'}</button>
       <button disabled={!time} onClick={() => vp?.restart()}>Restart</button>
+      <select value={vp?.speed ?? 1} onChange={e => { if (vp) vp.speed = +e.target.value; rerender() }} aria-label="Playback speed">
+        {[0.5, 1, 2, 4].map(x => <option key={x} value={x}>{x}x</option>)}
+      </select>
+      <button disabled={!time} onClick={() => { vp?.step(-1); rerender() }} aria-label="Step back one frame" title="Step back (fires no events)">◀︎</button>
+      <button disabled={!time} onClick={() => { vp?.step(1); rerender() }} aria-label="Step forward one frame" title="Step forward (fires events in the step)">▶︎</button>
+      <span className="muted" title={fps?.exported ? 'fps from the exported skeleton' : 'fps not exported (nonessential data); using the default'}>
+        {fps ? `${fps.fps} fps${fps.exported ? '' : ' (default)'}` : ''}
+      </span>
       <input type="range" disabled={!time} min={0} max={time?.d ?? 1} step={0.001} value={time?.t ?? 0}
         onChange={e => vp?.seek(+e.target.value)} aria-label="Animation time" />
       <span className="time">{time ? `${time.t.toFixed(3)} / ${time.d.toFixed(3)} s` : '—'}</span>
+      <label title="AnimationStateData.defaultMix used when switching animations">
+        Mix <input type="number" min={0} step={0.05} value={vp?.mix ?? 0} style={{ width: 60 }}
+          onChange={e => { vp?.setMix(Math.max(0, +e.target.value || 0)); rerender() }} /> s
+      </label>
     </div>
   </div>
 }

@@ -1,5 +1,5 @@
 import type { BaseTexture } from 'pixi.js'
-import { AtlasAttachmentLoader, SkeletonJson, TextureAtlas, type SkeletonData } from '@pixi-spine/all-3.8'
+import { AtlasAttachmentLoader, BinaryInput, SkeletonBinary, SkeletonJson, TextureAtlas, type SkeletonData, type TrackEntry } from '@pixi-spine/all-3.8'
 
 export type Sel =
   | { kind: 'bone'; name: string }
@@ -9,36 +9,65 @@ export type Sel =
 
 export interface TreeNode { id: string; label: string; sel: NonNullable<Sel>; children: TreeNode[] }
 
-export type Gate = { ok: true; version: string; json: any } | { ok: false; error: string }
+export type SkeletonSource = { format: 'json'; json: any } | { format: 'binary'; bytes: Uint8Array }
+export type Gate = ({ ok: true; version: string } & SkeletonSource) | { ok: false; error: string }
+
+const looksLikeVersion = (v: unknown): v is string => typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v)
+const versionError = (v: string) =>
+  v.startsWith('3.8.') ? null : `Spine ${v} detected. Only 3.8.x is supported; the 3.8 runtime can misread other versions without an error.`
+
+// Binary header: 3.x writes the hash and version as strings; 4.x writes an 8-byte hash, then the version string.
+export function binaryVersion(bytes: Uint8Array): string | null {
+  for (const hashBytes of [0, 8]) {
+    try {
+      const input = new BinaryInput(bytes)
+      if (hashBytes) for (let i = 0; i < hashBytes; i++) input.readByte()
+      else input.readString()
+      const v = input.readString()
+      if (looksLikeVersion(v)) return v
+    } catch { /* not this layout */ }
+  }
+  return null
+}
 
 // Runs before the runtime parser: the 3.8 runtime misparses other versions silently
 // (3.7 JSON stores skins as an object and loads with zero skins).
-export function gate(fileName: string, text: string): Gate {
+export function gate(fileName: string, data: Uint8Array): Gate {
   const fail = (msg: string): Gate => ({ ok: false, error: `${fileName}: ${msg}` })
-  if (/\.skel(\.bytes)?$/i.test(fileName)) return fail('binary .skel is not supported yet. Export JSON from Spine 3.8.')
+  if (/\.skel(\.bytes)?$/i.test(fileName)) {
+    // BinaryInput reads data.buffer from byte 0, so the bytes must not be a view into a larger buffer.
+    const bytes = data.byteOffset || data.byteLength !== data.buffer.byteLength ? data.slice() : data
+    const v = binaryVersion(bytes)
+    if (!v) return fail('not a readable Spine binary (no version found in the header).')
+    const bad = versionError(v)
+    if (bad) return fail(bad)
+    if (v === '3.8.75') return fail('Spine 3.8.75 binaries are not readable by the 3.8 runtime. Re-export with a newer 3.8 editor.')
+    return { ok: true, version: v, format: 'binary', bytes }
+  }
   let json: any
-  try { json = JSON.parse(text) } catch (e) {
-    return fail(`not valid JSON (${(e as Error).message}). Binary .skel is not supported yet.`)
+  try { json = JSON.parse(new TextDecoder().decode(data)) } catch (e) {
+    return fail(`not valid JSON (${(e as Error).message}). Binary exports must use the .skel extension.`)
   }
   const v = json?.skeleton?.spine
   if (typeof v !== 'string') return fail('missing skeleton.spine version; cannot verify this is Spine 3.8 data.')
-  if (!v.startsWith('3.8.')) return fail(`Spine ${v} detected. Only 3.8.x is supported; the 3.8 runtime can misread other versions without an error.`)
+  const bad = versionError(v)
+  if (bad) return fail(bad)
   if (json.skins && !Array.isArray(json.skins)) return fail(`declares ${v} but "skins" is not an array (3.7 layout).`)
-  return { ok: true, version: v, json }
+  return { ok: true, version: v, format: 'json', json }
 }
 
 // Valid 3.8 features the preview does not render faithfully: load in limited mode, after confirmation.
-export function limitations(json: any): string[] {
+export function limitations(d: SkeletonData): string[] {
   const out: string[] = []
-  const dark = (json.slots ?? []).filter((s: any) => s.dark).map((s: any) => s.name)
+  const dark = d.slots.filter(s => s.darkColor).map(s => s.name)
   if (dark.length) out.push(`Two-color tint (dark color) is not rendered by the preview. Slots: ${dark.join(', ')}.`)
-  const audio = Object.entries<any>(json.events ?? {}).filter(([, e]) => e.audio).map(([n]) => n)
+  const audio = d.events.filter(e => e.audioPath).map(e => e.name)
   if (audio.length) out.push(`Audio events are listed but not played. Events: ${audio.join(', ')}.`)
   return out
 }
 
 export function loadSkeleton(
-  jsonName: string, json: any, atlasName: string, atlasText: string,
+  skelName: string, src: SkeletonSource, atlasName: string, atlasText: string,
   pageTexture: (page: string) => BaseTexture | undefined,
 ): SkeletonData {
   let atlas: TextureAtlas
@@ -49,8 +78,10 @@ export function loadSkeleton(
       done(t)
     })
   } catch (e) { throw new Error(`${atlasName}: ${(e as Error).message}`) }
-  try { return new SkeletonJson(new AtlasAttachmentLoader(atlas)).readSkeletonData(json) }
-  catch (e) { throw new Error(`${jsonName}: ${(e as Error).message}`) }
+  const loader = new AtlasAttachmentLoader(atlas)
+  try {
+    return src.format === 'json' ? new SkeletonJson(loader).readSkeletonData(src.json) : new SkeletonBinary(loader).readSkeletonData(src.bytes)
+  } catch (e) { throw new Error(`${skelName}: ${(e as Error).message}`) }
 }
 
 export const selId = (s: Sel) =>
@@ -88,3 +119,15 @@ export function buildTree(d: SkeletonData): TreeNode[] {
   }
   return roots
 }
+
+// Moves a track to time t without firing events or loop completions (plan P2-05): the next
+// apply only fires events in (animationLast, t], so every "last" marker moves with the time.
+export function seekTrack(e: TrackEntry, t: number) {
+  // ponytail: clamp just below the end, since a looping entry wraps t === duration back to 0.
+  t = Math.max(0, Math.min(t, e.animation.duration - 1e-4))
+  e.trackTime = e.trackLast = e.nextTrackLast = t
+  e.animationLast = e.nextAnimationLast = t
+}
+
+// Frame step for single-stepping; skeleton fps is nonessential data in 3.8.
+export const frameRate = (d: SkeletonData) => ({ fps: d.fps || 30, exported: d.fps > 0 })
