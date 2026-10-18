@@ -38,6 +38,7 @@ export class Viewport {
   spine: Spine | null = null
   playing = false
   speed = 1
+  loop = true
   mix = 0
   sel: Sel = null
   events: LoggedEvent[] = []
@@ -134,8 +135,14 @@ export class Viewport {
     if (!s) return
     // Without mixing, start from the setup pose so the previous animation leaves nothing behind.
     if (!this.mix) s.skeleton.setToSetupPose()
-    s.state.setAnimation(0, name, true)
+    s.state.setAnimation(0, name, this.loop)
     s.update(0)
+  }
+
+  // Applies to the playing entry too, so turning loop off finishes the current cycle and holds the last frame.
+  setLoop(on: boolean) {
+    this.loop = on
+    if (this.entry) this.entry.loop = on
   }
 
   get entry() { return this.spine?.state.tracks[0] ?? null }

@@ -315,6 +315,7 @@ function App() {
       <select value={vp?.speed ?? 1} onChange={e => { if (vp) vp.speed = +e.target.value; rerender() }} aria-label="Playback speed">
         {[0.5, 1, 2, 4].map(x => <option key={x} value={x}>{x}x</option>)}
       </select>
+      <label><input type="checkbox" checked={vp?.loop ?? true} onChange={e => { vp?.setLoop(e.target.checked); rerender() }} /> Loop</label>
       <button disabled={!time} onClick={() => { vp?.step(-1); rerender() }} aria-label="Step back one frame" title="Step back (fires no events)">◀︎</button>
       <button disabled={!time} onClick={() => { vp?.step(1); rerender() }} aria-label="Step forward one frame" title="Step forward (fires events in the step)">▶︎</button>
       <span className="muted" title={fps?.exported ? 'fps from the exported skeleton' : 'fps not exported (nonessential data); using the default'}>

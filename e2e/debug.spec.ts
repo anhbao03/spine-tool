@@ -93,3 +93,20 @@ test('metrics panel shows skeleton, attachment, and animation cost', async ({ pa
   await expect(row('Timelines')).not.toHaveText(first)
   expect(errors).toEqual([])
 })
+
+test('loop off holds the last frame; loop on wraps', async ({ page }) => {
+  const errors = await open(page)
+  const t = async () => +(await time(page).innerText()).split(' / ')[0]
+  const d = async () => +(await time(page).innerText()).split(' / ')[1].split(' ')[0]
+  await page.getByLabel('Animation', { exact: true }).selectOption('walk')
+  await page.getByLabel('Loop').uncheck()
+  await page.getByLabel('Playback speed').selectOption('4')
+  await page.getByRole('button', { name: 'Restart' }).click()
+  const dur = await d()
+  await expect.poll(t).toBe(dur)
+  await page.waitForTimeout(300)
+  expect(await t()).toBe(dur)
+  await page.getByLabel('Loop').check()
+  await expect.poll(t).toBeLessThan(dur)
+  expect(errors).toEqual([])
+})
