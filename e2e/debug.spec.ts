@@ -79,3 +79,17 @@ test('P2-02/03: animation state with mixing, slot monitor', async ({ page }) => 
   await expect(page.locator('.inspector h3').first()).toHaveText('Slot · goggles')
   expect(errors).toEqual([])
 })
+
+test('metrics panel shows skeleton, attachment, and animation cost', async ({ page }) => {
+  const errors = await open(page)
+  const m = page.locator('details', { has: page.locator('summary', { hasText: 'Metrics' }) })
+  const row = (k: string) => m.locator('tr', { has: page.locator('td:first-child', { hasText: new RegExp(`^${k}$`) }) }).locator('td').nth(1)
+  await expect(row('Bones')).toHaveText('64')
+  await expect(row('Slots')).toHaveText('52')
+  await expect(row('Constraints')).toHaveText('14')
+  const first = await row('Timelines').innerText()
+  await page.getByLabel('Animation', { exact: true }).selectOption('walk')
+  await expect(m).toContainText('Animation · walk')
+  await expect(row('Timelines')).not.toHaveText(first)
+  expect(errors).toEqual([])
+})

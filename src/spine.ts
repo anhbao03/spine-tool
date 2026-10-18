@@ -1,5 +1,9 @@
 import type { BaseTexture } from 'pixi.js'
-import { AtlasAttachmentLoader, BinaryInput, SkeletonBinary, SkeletonJson, TextureAtlas, type SkeletonData, type TrackEntry } from '@pixi-spine/all-3.8'
+import {
+  AtlasAttachmentLoader, AttachmentType, BinaryInput, Bone, CurveTimeline, DeformTimeline, SkeletonBinary, SkeletonJson, TextureAtlas,
+  type Animation, type Attachment, type ClippingAttachment, type MeshAttachment, type RegionAttachment, type Skeleton, type SkeletonData,
+  type Slot, type SlotData, type TrackEntry,
+} from '@pixi-spine/all-3.8'
 
 export type Sel =
   | { kind: 'bone'; name: string }
@@ -131,3 +135,67 @@ export function seekTrack(e: TrackEntry, t: number) {
 
 // Frame step for single-stepping; skeleton fps is nonessential data in 3.8.
 export const frameRate = (d: SkeletonData) => ({ fps: d.fps || 30, exported: d.fps > 0 })
+
+// Coordinates here are Spine-container local space, which pixi-spine keeps y-down.
+export function geometry(slot: Slot, att: Attachment | null): { v: number[]; tris: number[]; hull: number } | null {
+  if (!att) return null
+  if (att.type === AttachmentType.Region) {
+    const v = new Array<number>(8)
+    ;(att as RegionAttachment).computeWorldVertices(slot.bone, v, 0, 2)
+    return { v, tris: [0, 1, 2, 2, 3, 0], hull: 4 }
+  }
+  if (att.type === AttachmentType.Mesh || att.type === AttachmentType.LinkedMesh) {
+    const m = att as MeshAttachment
+    const v = new Array<number>(m.worldVerticesLength)
+    m.computeWorldVertices(slot, 0, m.worldVerticesLength, v, 0, 2)
+    return { v, tris: Array.from(m.triangles), hull: m.hullLength / 2 }
+  }
+  return null
+}
+
+// Runtime cost of the current pose and animation, after the Spine editor's Metrics view.
+// Attachment metrics follow what a renderer draws this frame: active bones, draw order, clip ranges.
+export function metrics(sk: Skeleton, anim: Animation | null) {
+  const a = { visible: 0, vertices: 0, vertexTransforms: 0, triangles: 0, area: 0, clipping: 0, clipped: 0 }
+  let clipEnd: SlotData | null = null
+  for (const slot of sk.drawOrder) {
+    if (!slot.bone.active) continue
+    const att = slot.getAttachment()
+    // Runtimes ignore a clipping attachment while another clip range is open.
+    if (att?.type === AttachmentType.Clipping && !clipEnd) { a.clipping++; clipEnd = (att as ClippingAttachment).endSlot }
+    const g = geometry(slot, att)
+    if (g) {
+      const verts = g.v.length / 2, tris = g.tris.length / 3, bones = (att as MeshAttachment).bones
+      a.visible++
+      a.vertices += verts
+      // Weighted mesh: one transform per bone influence; `bones` is [count, index × count, ...] per vertex.
+      a.vertexTransforms += bones ? bones.length - verts : verts
+      a.triangles += tris
+      if (clipEnd) a.clipped += tris
+      for (let i = 0; i < g.tris.length; i += 3) {
+        const [p, q, r] = [g.tris[i] * 2, g.tris[i + 1] * 2, g.tris[i + 2] * 2], v = g.v
+        a.area += Math.abs((v[q] - v[p]) * (v[r + 1] - v[p + 1]) - (v[r] - v[p]) * (v[q + 1] - v[p + 1])) / 2
+      }
+    }
+    if (clipEnd === slot.data) clipEnd = null
+  }
+  const frames = (t: object) => (t as { getFrameCount(): number }).getFrameCount()
+  let keys = 0, bezier = 0, deform = 0
+  for (const t of anim?.timelines ?? []) {
+    keys += frames(t)
+    // The last key has no curve to the next one.
+    if (t instanceof CurveTimeline) for (let i = 0; i < frames(t) - 1; i++) if (t.getCurveType(i) === CurveTimeline.BEZIER) bezier++
+    if (t instanceof DeformTimeline) for (const f of t.frameVertices) deform += f.length / 2
+  }
+  return {
+    bones: sk.bones.filter(b => b.active).length,
+    // World transforms computed per frame: one per bone in the update cache, plus one per bone each constraint
+    // (IK, transform, path) transforms again.
+    boneTransforms: sk._updateCache.reduce((n, u) => n + (u instanceof Bone ? 1 : (u as unknown as { bones: Bone[] }).bones.length), 0),
+    constraints: [...sk.ikConstraints, ...sk.transformConstraints, ...sk.pathConstraints].filter(c => c.isActive()).length,
+    slots: sk.slots.length,
+    attachments: sk.data.skins.reduce((n, s) => n + s.getAttachments().length, 0),
+    ...a,
+    timelines: anim?.timelines.length ?? 0, keys, bezier, deform,
+  }
+}

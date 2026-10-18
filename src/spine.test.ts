@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { BaseTexture } from 'pixi.js'
 import { AnimationState, AnimationStateData, Skeleton } from '@pixi-spine/all-3.8'
-import { buildTree, filterTree, frameRate, gate, limitations, loadSkeleton, seekTrack, type TreeNode } from './spine'
+import { buildTree, filterTree, frameRate, gate, limitations, loadSkeleton, metrics, seekTrack, type TreeNode } from './spine'
 
 const fx = (p: string) => readFileSync(new URL(`../fixtures/${p}`, import.meta.url), 'utf8')
 // Node may hand back a view into a pooled buffer; the gate must cope with that.
@@ -167,5 +167,40 @@ describe('playback events (P2-04, P2-05)', () => {
 
   it('uses the default 30 fps when fps was not exported', () => {
     expect(frameRate(data)).toEqual({ fps: 30, exported: false })
+  })
+})
+
+describe('metrics', () => {
+  const data = load(JSON.parse(json38))
+  const sk = new Skeleton(data)
+  sk.updateWorldTransform()
+
+  it('counts skeleton structure and per-frame attachment cost', () => {
+    const m = metrics(sk, null)
+    expect(m).toMatchObject({ bones: data.bones.length, slots: data.slots.length, timelines: 0, keys: 0 })
+    expect(m.constraints).toBe(data.ikConstraints.length + data.transformConstraints.length + data.pathConstraints.length)
+    expect(m.boneTransforms).toBeGreaterThan(m.bones) // IK re-transforms bones
+    expect(m.visible).toBeGreaterThan(0)
+    expect(m.triangles).toBeGreaterThanOrEqual(m.visible * 2)
+    expect(m.vertexTransforms).toBeGreaterThan(m.vertices) // spineboy has weighted meshes
+    expect(m.area).toBeGreaterThan(0)
+  })
+
+  it('counts triangles inside an active clip range', () => {
+    const slot = data.slots.find(s => data.defaultSkin!.getAttachment(s.index, 'clipping'))!
+    sk.setAttachment(slot.name, 'clipping')
+    const m = metrics(sk, null)
+    expect(m.clipping).toBe(1)
+    expect(m.clipped).toBeGreaterThan(0)
+    sk.setSlotsToSetupPose()
+  })
+
+  it('counts keys, bezier curves, and deform vertices of the animation', () => {
+    const m = metrics(sk, data.findAnimation('walk'))
+    expect(m.timelines).toBe(data.findAnimation('walk').timelines.length)
+    expect(m.keys).toBeGreaterThan(m.timelines)
+    expect(m.bezier).toBeGreaterThan(0)
+    expect(m.bezier).toBeLessThan(m.keys)
+    expect(metrics(sk, data.findAnimation('portal')).deform).toBeGreaterThan(0)
   })
 })

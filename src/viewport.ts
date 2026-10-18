@@ -1,9 +1,9 @@
 import { Application, Container, Graphics, Point, Text } from 'pixi.js'
 import {
   AttachmentType, Spine, SpineDebugRenderer,
-  type Attachment, type Event, type MeshAttachment, type RegionAttachment, type SkeletonData, type Slot, type TrackEntry,
+  type Attachment, type Event, type SkeletonData, type Slot, type TrackEntry,
 } from '@pixi-spine/all-3.8'
-import { frameRate, seekTrack, type Sel } from './spine'
+import { frameRate, geometry, seekTrack, type Sel } from './spine'
 
 const HIGHLIGHT = 0x00e5ff
 const BONE = 0x76ff03
@@ -19,23 +19,6 @@ export type Overlay = keyof typeof OVERLAYS
 export interface LoggedEvent {
   seq: number; name: string; time: number; trackTime: number; animation: string
   int: number; float: number; string: string; audio: string; volume: number; balance: number
-}
-
-// Coordinates here are Spine-container local space, which pixi-spine keeps y-down.
-function geometry(slot: Slot, att: Attachment | null): { v: number[]; tris: number[]; hull: number } | null {
-  if (!att) return null
-  if (att.type === AttachmentType.Region) {
-    const v = new Array<number>(8)
-    ;(att as RegionAttachment).computeWorldVertices(slot.bone, v, 0, 2)
-    return { v, tris: [0, 1, 2, 2, 3, 0], hull: 4 }
-  }
-  if (att.type === AttachmentType.Mesh || att.type === AttachmentType.LinkedMesh) {
-    const m = att as MeshAttachment
-    const v = new Array<number>(m.worldVerticesLength)
-    m.computeWorldVertices(slot, 0, m.worldVerticesLength, v, 0, 2)
-    return { v, tris: Array.from(m.triangles), hull: m.hullLength / 2 }
-  }
-  return null
 }
 
 function inTriangle(v: number[], a: number, b: number, c: number, x: number, y: number) {

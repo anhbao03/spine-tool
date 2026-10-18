@@ -7,7 +7,7 @@ import {
 } from '@pixi-spine/all-3.8'
 import { buildTree, filterTree, gate, limitations, loadSkeleton, selId, type Sel, type TreeNode } from './spine'
 import { OVERLAYS, Viewport, type Overlay } from './viewport'
-import { AnimationStatePanel, EventMonitor, n, Props, SlotMonitor } from './panels'
+import { AnimationStatePanel, EventMonitor, MetricsPanel, n, Props, SlotMonitor } from './panels'
 
 interface Project {
   name: string; version: string; format: 'json' | 'binary'; data: SkeletonData; warnings: string[]; tree: TreeNode[]
@@ -300,6 +300,7 @@ function App() {
       </details>
       {project && vp && <>
         <details open><summary>Animation state</summary><AnimationStatePanel vp={vp} /></details>
+        <details open><summary>Metrics</summary><MetricsPanel vp={vp} /></details>
         <details><summary>Slot monitor</summary><SlotMonitor vp={vp} selected={id} select={setSel} /></details>
         <details open><summary>Events ({vp.events.length})</summary><EventMonitor vp={vp} /></details>
       </>}

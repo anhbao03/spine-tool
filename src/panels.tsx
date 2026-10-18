@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { MixBlend } from '@pixi-spine/all-3.8'
-import type { Sel } from './spine'
+import { metrics, type Sel } from './spine'
 import type { Viewport } from './viewport'
 
 export const n = (v: number) => (Number.isFinite(v) ? String(+v.toFixed(3)) : String(v))
@@ -72,5 +72,25 @@ export function EventMonitor({ vp }: { vp: Viewport }) {
         </td>
       </tr>)}
     </tbody></table>}
+  </>
+}
+
+// Per-frame runtime cost, as in the Spine editor's Metrics view. Animation counts are for track 0.
+export function MetricsPanel({ vp }: { vp: Viewport }) {
+  const sk = vp.spine?.skeleton
+  if (!sk) return null
+  const m = metrics(sk, vp.entry?.animation ?? null)
+  return <>
+    <Props title="Skeleton" rows={[
+      ['Bones', m.bones], ['Bone transforms', m.boneTransforms], ['Constraints', m.constraints], ['Slots', m.slots],
+    ]} />
+    <Props title="Attachments" rows={[
+      ['Total', m.attachments], ['Visible', m.visible], ['Vertices', m.vertices], ['Vertex transforms', m.vertexTransforms],
+      ['Triangles', m.triangles], ['Area (sq px at scale 1)', Math.round(m.area).toLocaleString()],
+      ['Clipping polygons', m.clipping], ['Clipped triangles', m.clipped],
+    ]} />
+    <Props title={`Animation${vp.entry ? ` · ${vp.entry.animation.name}` : ''}`} rows={[
+      ['Timelines', m.timelines], ['Keys', m.keys], ['Bezier curves', m.bezier], ['Deform vertices', m.deform],
+    ]} />
   </>
 }
